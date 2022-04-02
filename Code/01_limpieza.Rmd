@@ -36,6 +36,11 @@ nombres <- c(
 )
 
 names(construccion_tidy) <- nombres
+
+construccion_tidy <- construccion_tidy |> 
+  mutate(fecha = parse_date_time(trimestre, orders = "%q%Y"),
+         fecha = as_date(fecha)) |> 
+  relocate(fecha)
 ```
 
 Salvar el archivo.
