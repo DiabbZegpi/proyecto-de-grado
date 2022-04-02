@@ -1,0 +1,126 @@
+---
+title: "Limpieza de datos"
+author: "Diabb Zegpi D."
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r}
+library(tidyverse)
+library(lubridate)
+library(here)
+
+raw_construccion <- read_csv(here("Data", "Chile-Construcción_raw.csv")) 
+```
+
+Cambiar a formato tidy, reemplazar nulos por ceros y renombrar las columnas.
+
+```{r}
+construccion_tidy <- raw_construccion |> 
+  select(-Activo) |> 
+  pivot_longer(cols = -Fecha) |> 
+  mutate(item = str_extract(name, "(.*?)(\\|)"),
+         item = str_sub(item, end = -2L),
+         accion = str_extract(name, "\\|(?:.(?!\\|))+$"),
+         accion = str_sub(accion, start = 2L)) |> 
+  select(-name) |> 
+  mutate(value = if_else(value == "-", "0", value),
+         value = as.numeric(value)) |> 
+  pivot_wider(names_from = item, values_from = value)
+
+nombres <- c(
+  "trimestre", "accion", "activo_total", "pasivo_corriente", "activo_corriente",
+  "activo_tangible", "ingreso_neto", "p_vl", "resultado_bruto", "ebitda",
+  "ciclo_operativo", "capital_trabajo", "gastos_admin", "costo_ventas", "plazo_proveedor", 
+  "inventario", "pasivo_total", "cuentas_xcobrar", "cuentas_xpagar", "utilidad_neta"
+)
+
+names(construccion_tidy) <- nombres
+```
+
+Salvar el archivo.
+
+```{r}
+saveRDS(construccion_tidy, here("Data", "construccion_tidy.rds"))
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
