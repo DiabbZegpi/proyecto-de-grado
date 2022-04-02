@@ -49,8 +49,16 @@ Salvar el archivo.
 saveRDS(construccion_tidy, here("Data", "construccion_tidy.rds"))
 ```
 
+Explorar missing data
 
+```{r}
+construccion_tidy |> 
+  rowwise(trimestre, accion) |> 
+  summarise(d = sum(c_across(all_of(2:19))), .groups = "drop") |> 
+  count(d == 0)
+```
 
+Hay 1531 filas de indicadores completamente vacías, lo que equivale al 66% de los datos.
 
 
 
