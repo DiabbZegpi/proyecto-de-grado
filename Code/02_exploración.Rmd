@@ -1,0 +1,14 @@
+---
+title: "Exploración"
+author: "Diabb Zegpi D."
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r}
+library(tidyverse)
+library(here)
+
+construccion_clean <- readRDS(here("Data", "construccion_clean.rds"))
+```
+
