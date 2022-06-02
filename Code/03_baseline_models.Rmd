@@ -1,0 +1,112 @@
+---
+title: "03_baseline_models"
+output: html_document
+date: "`r Sys.Date()`"
+editor_options: 
+  chunk_output_type: console
+---
+
+# Importaciones
+
+```{r}
+library(tidyverse)
+library(tidymodels)
+library(lubridate)
+library(here)
+
+theme_set(theme_bw())
+
+data <- readRDS(here("Data", "construccion_clean.rds")) |> 
+  mutate(year = year(fecha)) |> 
+  filter(year <= 2020)
+```
+
+## Crecimiento anual
+
+```{r}
+crecimiento <- data |> 
+  group_by(accion, year) |> 
+  arrange(year) |> 
+  summarise(ventas_anuales = sum(ingreso_neto), groups = "drop_last") |> 
+  summarise(oportunidades_crec = log(ventas_anuales / dplyr::lag(ventas_anuales)),
+            .groups = "drop") |> 
+  mutate(oportunidades_crec = if_else(is.na(oportunidades_crec), 0, oportunidades_crec))
+
+
+crecimiento <- data |> 
+  distinct(accion, year) |> 
+  mutate(oportunidades_crec = crecimiento$oportunidades_crec)
+```
+
+
+# Vásquez-Larre 
+
+## Feature engineeirng
+
+```{r}
+vas_larre_data <- data |> 
+  left_join(crecimiento, by = c("accion", "year")) |> 
+  transmute(
+    endeudamiento_cp = pasivo_corriente / activo_total,
+    tamano_empresa = log(activo_total),
+    tangibilidad_act = activo_tangible / activo_total,
+    oportunidades_crec,
+    margen_bruto = resultado_bruto / ingreso_neto,
+    p_vl,
+    ebitda,
+    ciclo_operativo,
+    CT_neto = capital_trabajo / activo_total,
+    CT_neto_2 = CT_neto ^ 2,
+    ROA = utilidad_neta / activo_total
+  ) |> 
+  na.omit() |> 
+  filter(!if_any(where(is.numeric), is.infinite))
+```
+
+
+## Data partition
+
+```{r}
+set.seed(1234)
+splits <- initial_split(vas_larre_data)
+train_set <- training(splits)
+test_set <- testing(splits)
+
+set.seed(2345)
+folds <- vfold_cv(train_set, v = 10)
+```
+
+## Recipe
+
+```{r}
+# Base recipe
+base_rec <- recipe(ROA ~ ., data = train_set)
+```
+
+## Model specs
+
+```{r}
+vas_larre_spec <- linear_reg()
+```
+
+## Workflows
+
+```{r}
+vas_larre_wf <- workflow() |> 
+  add_model(vas_larre_spec) |> 
+  add_recipe(base_rec)
+```
+
+## Model training
+
+```{r}
+vas_larre_res <- fit_resamples(
+  vas_larre_wf,
+  resamples = folds,
+  metrics = metric_set(rmse, rsq),
+  control = control_resamples(save_pred = TRUE, verbose = TRUE)
+)
+
+vas_larre_res |> collect_metrics()
+```
+
