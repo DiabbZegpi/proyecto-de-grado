@@ -15,6 +15,9 @@ library(lubridate)
 library(here)
 
 theme_set(theme_bw())
+theme_update(
+  text = element_text(size = 20)
+)
 
 data <- readRDS(here("Data", "construccion_clean.rds")) |> 
   mutate(year = year(fecha)) |> 
@@ -107,6 +110,17 @@ vas_larre_res <- fit_resamples(
   control = control_resamples(save_pred = TRUE, verbose = TRUE)
 )
 
-vas_larre_res |> collect_metrics()
+vas_larre_res |>
+  unnest(.metrics) |> 
+  ggplot(aes(.metric, .estimate)) +
+  geom_boxplot() +
+  annotate(geom = "point", x = "rsq", y = 0.03, size = 5, color = "cyan4") +
+  annotate(geom = "text", x = 1.5, y = 0.1, size = 5,
+           label = "Modelo de Vásquez y Larre") +
+  geom_curve(x = 1.5, xend = 2, y = 0.08, yend = 0.03,
+               arrow = arrow(angle = 15, length = unit(0.3, "cm")),
+             curvature = 0.2) +
+  labs(title = "Resultados de 10-fold corss-validation con regresión lineal",
+       x = NULL, y = "valor estimado") 
 ```
 
