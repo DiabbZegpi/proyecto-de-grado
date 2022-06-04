@@ -9,12 +9,10 @@ editor_options:
 
 ```{r}
 library(tidyverse)
-library(tidymodels)
 library(lubridate)
 library(here)
 
-# tidymodels_prefer()
-theme_set(theme_minimal())
+theme_set(theme_bw())
 construccion_clean <- readRDS(here("Data", "construccion_clean.rds")) |> 
   filter(year(fecha) <= 2020)
 ```
@@ -22,7 +20,6 @@ construccion_clean <- readRDS(here("Data", "construccion_clean.rds")) |>
 
 ```{r}
 construccion_clean |> 
-  # filter(accion == "Besalco S.A. Ord") |> 
   select(fecha, metrica = ebitda, accion) |> 
   mutate(year = year(fecha)) |> 
   group_by(accion) |> 
@@ -36,18 +33,19 @@ construccion_clean |>
 metrica = "capital_trabajo"
 metrica2 = "utilidad_neta"
 
-construccion_clean |> 
+rolling_metrics <- construccion_clean |> 
   select(fecha, metrica = {{metrica}}, metrica2 = {{metrica2}}, accion) |> 
   mutate(year = year(fecha)) |> 
   group_by(accion) |> 
   mutate(metrica_rolling = (metrica + lag(metrica) + lag(metrica, 2) + lag(metrica, 3)) / 4,
-         metrica2_rolling = (metrica2 + lag(metrica2) + lag(metrica2, 2) + lag(metrica2, 3)) / 4) |> 
-  ggplot(aes(x = metrica_rolling, y = metrica2_rolling)) +
+         metrica2_rolling = (metrica2 + lag(metrica2) + lag(metrica2, 2) + lag(metrica2, 3)) / 4) |>
+  ungroup() 
+  
+ggplot(rolling_metrics, aes(x = metrica, y = metrica2)) +
   geom_point(color = "black")  +
-  labs(x = paste(metrica, "móvil"),
-       y = paste(metrica2, "móvil")) +
+  labs(x = paste(metrica),
+       y = paste(metrica2)) +
   geom_smooth()
-  # facet_wrap(~accion, scales = "free")
 ```
 
 

@@ -31,10 +31,8 @@ crecimiento <- data |>
   group_by(accion, year) |> 
   arrange(year) |> 
   summarise(ventas_anuales = sum(ingreso_neto), groups = "drop_last") |> 
-  summarise(oportunidades_crec = log(ventas_anuales / dplyr::lag(ventas_anuales)),
-            .groups = "drop") |> 
+  summarise(oportunidades_crec = log(ventas_anuales / dplyr::lag(ventas_anuales)), .groups = "drop") |> 
   mutate(oportunidades_crec = if_else(is.na(oportunidades_crec), 0, oportunidades_crec))
-
 
 crecimiento <- data |> 
   distinct(accion, year) |> 
@@ -64,6 +62,69 @@ vas_larre_data <- data |>
   ) |> 
   na.omit() |> 
   filter(!if_any(where(is.numeric), is.infinite))
+```
+
+```{r}
+corr_data <- vas_larre_data |> 
+  corrr::correlate(diagonal = 1) |> 
+  corrr::shave(upper = FALSE) |> 
+  pivot_longer(
+    cols = -term,
+    names_to = "colname",
+    values_to = "corr"
+  ) |> 
+  mutate(
+    rowname = fct_inorder(term),
+    colname = fct_inorder(colname),
+    label = if_else(is.na(corr), "", sprintf("%1.2f", corr))
+  )
+
+ggplot(corr_data, aes(rowname, fct_rev(colname), 
+                      fill = corr)) +
+  geom_tile() +
+  geom_text(aes(
+    label = label,
+    color = abs(corr) < .75
+  )) +
+  coord_fixed(expand = FALSE) +
+  scale_color_manual(
+    values = c("white", "black"),
+    guide = "none"
+  ) +
+  scale_fill_distiller(
+    palette = "PuOr",
+    na.value = "white",
+    direction = 1,
+    limits = c(-1, 1),
+    name = "Correlación\nde Pearson"
+  ) +
+  labs(x = NULL, y = NULL) +
+  theme(text = element_text(size = 16),
+        panel.border = element_rect(color = NA, fill = NA),
+        legend.position = c(.85, .8),
+        axis.text.x = element_text(angle = 90, hjust = 1, vjust = .5),
+        axis.ticks = element_blank(),
+        panel.grid = element_blank())
+```
+
+
+```{r}
+metrica = "CT_neto"
+metrica2 = "ROA"
+
+rolling_metrics <- vas_larre_data |> 
+  select(fecha, metrica = {{metrica}}, metrica2 = {{metrica2}}, accion) |> 
+  mutate(year = year(fecha)) |> 
+  group_by(accion) |> 
+  mutate(metrica_rolling = (metrica + lag(metrica) + lag(metrica, 2) + lag(metrica, 3)) / 4,
+         metrica2_rolling = (metrica2 + lag(metrica2) + lag(metrica2, 2) + lag(metrica2, 3)) / 4) |>
+  ungroup() |> 
+  pivot_longer(cols = c(metrica, metrica2, metrica_rolling, metrica2_rolling)) |> 
+  mutate(name = str_replace(name, "metrica2", metrica2),
+         name = str_replace(name, "metrica", metrica)) |> 
+  pivot_wider(names_from = name, values_from = value)
+  
+GGally::ggpairs(rolling_metrics |> select(4:7))
 ```
 
 
@@ -115,12 +176,12 @@ vas_larre_res |>
   ggplot(aes(.metric, .estimate)) +
   geom_boxplot() +
   annotate(geom = "point", x = "rsq", y = 0.03, size = 5, color = "cyan4") +
-  annotate(geom = "text", x = 1.5, y = 0.1, size = 5,
+  annotate(geom = "text", x = 1.5, y = 0.09, size = 5,
            label = "Modelo de Vásquez y Larre") +
   geom_curve(x = 1.5, xend = 2, y = 0.08, yend = 0.03,
                arrow = arrow(angle = 15, length = unit(0.3, "cm")),
              curvature = 0.2) +
-  labs(title = "Resultados de 10-fold corss-validation con regresión lineal",
+  labs(title = "Resultados de 10-fold cross-validation de regresión lineal",
        x = NULL, y = "valor estimado") 
 ```
 
