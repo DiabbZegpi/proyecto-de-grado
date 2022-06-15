@@ -65,6 +65,11 @@ vas_larre_data <- data |>
 ```
 
 ```{r}
+saveRDS(vas_larre_data, here("Data", "vasquez_larre_data.rds"))
+```
+
+
+```{r}
 corr_data <- vas_larre_data |> 
   corrr::correlate(diagonal = 1) |> 
   corrr::shave(upper = FALSE) |> 
