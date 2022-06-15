@@ -1,0 +1,74 @@
+---
+title: "Random effect models"
+output: html_document
+date: "`r Sys.Date()`"
+---
+
+```{r}
+library(tidyverse)
+library(lubridate)
+library(here)
+
+theme_set(theme_bw())
+theme_update(
+  text = element_text(size = 16)
+)
+
+data <- readRDS(here("Data", "construccion_clean.rds")) |> 
+  mutate(year = year(fecha)) |> 
+  filter(year <= 2020)
+
+vl_data <- readRDS(here("Data", "vasquez_larre_data.rds")) |> 
+  select(-ROA)
+```
+
+```{r}
+data
+```
+
+```{r}
+vl_data
+```
+
+## Data partitioning
+
+```{r}
+set.seed(1234)
+train_ids <- sample(nrow(vl_data), size = round(0.7 * nrow(vl_data)), replace = FALSE)
+vl_train <- vl_data[train_ids, ]
+vl_test <- vl_data[-train_ids, ]
+```
+
+# Modelo OLS
+
+```{r}
+ols <- lm(margen_bruto ~ ., data = vl_train |> select(-c(accion, fecha)))
+summary(ols)
+```
+
+El modelo **OLS** ajustado a las variables de Vásquez y Larre encuentra efectos significativos para 7 de los 9 predictores, entre ellos $CT$ y $CT^2$. El coeficiente de determinación ajustado $R^2_{adj} = 0.4696$ indica que el ajuste es insuficiente para explicar la mitad de la variable respuesta, margen bruto.
+
+El estadístico $F$ para la prueba de regresión es significativo, para niveles de significancia menores que 0.0000001. 
+
+## Análisis de residuales
+
+### Normalidad
+
+```{r}
+ols_residuals <- residuals(ols) |> enframe(value = "residuals", name = NULL)
+n_sturges <- nclass.Sturges(ols_residuals$residuals)
+
+ols_residuals |> 
+  ggplot(aes(x = residuals)) +
+  geom_histogram(aes(y = ..density.., fill = ..count..), bins = n_sturges) +
+  stat_function(
+    fun = dnorm, 
+    color = "firebrick",
+    size = 1,
+    args = list(mean = mean(ols_residuals$residuals),
+                sd = sd(ols_residuals$residuals))
+  ) +
+  scale_fill_gradient(low = "#dcdcdc", high = "#7c7c7c") +
+  labs(title = "Histograma de residuales con curva normal teórica")
+```
+
