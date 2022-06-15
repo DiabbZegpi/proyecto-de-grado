@@ -48,6 +48,8 @@ crecimiento <- data |>
 vas_larre_data <- data |> 
   left_join(crecimiento, by = c("accion", "year")) |> 
   transmute(
+    accion,
+    fecha,
     endeudamiento_cp = pasivo_corriente / activo_total,
     tamano_empresa = log(activo_total),
     tangibilidad_act = activo_tangible / activo_total,
