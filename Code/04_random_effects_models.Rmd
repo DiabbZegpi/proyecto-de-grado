@@ -11,7 +11,8 @@ library(here)
 
 theme_set(theme_bw())
 theme_update(
-  text = element_text(size = 16)
+  text = element_text(size = 16),
+  plot.title = element_text(hjust = 0.5)
 )
 
 data <- readRDS(here("Data", "construccion_clean.rds")) |> 
@@ -55,20 +56,304 @@ El estadístico $F$ para la prueba de regresión es significativo, para niveles 
 ### Normalidad
 
 ```{r}
-ols_residuals <- residuals(ols) |> enframe(value = "residuals", name = NULL)
-n_sturges <- nclass.Sturges(ols_residuals$residuals)
+ols_residuals <- fortify(ols) |> 
+  mutate(id = row_number())
+n_sturges <- nclass.Sturges(ols_residuals$.resid)
 
 ols_residuals |> 
-  ggplot(aes(x = residuals)) +
-  geom_histogram(aes(y = ..density.., fill = ..count..), bins = n_sturges) +
+  ggplot(aes(x = .resid)) +
+  geom_histogram(
+    aes(y = ..density.., fill = ..count..), 
+    bins = n_sturges
+  ) +
   stat_function(
     fun = dnorm, 
     color = "firebrick",
     size = 1,
-    args = list(mean = mean(ols_residuals$residuals),
-                sd = sd(ols_residuals$residuals))
+    args = list(mean = mean(ols_residuals$.resid),
+                sd = sd(ols_residuals$.resid))
   ) +
   scale_fill_gradient(low = "#dcdcdc", high = "#7c7c7c") +
-  labs(title = "Histograma de residuales con curva normal teórica")
+  labs(
+    title = "Histograma de residuales con curva normal teórica",
+    x = "residuales", 
+    y = "densidad",
+    fill = "frecuencia"
+  )
 ```
+
+```{r}
+qq_ols <- ols_residuals |> 
+  ggplot(aes(sample = .stdresid)) +
+  geom_qq_line(
+    color = "firebrick", 
+    size = 1,
+  ) +
+  geom_qq(
+    alpha = 0.4,
+    shape = 16,
+    size = 2,
+  ) +
+  labs(
+    title = "Gráfico Normal Cuantil-Cuantil",
+    x = "cuantiles teóricos",
+    y = "cuantiles muestrales"
+  ) 
+
+qq_labels <- ggplot_build(qq_ols)$data[[2]] |>
+  slice_max(sample, n = 2) |>
+  mutate(id = c(226, 105))
+
+qq_ols +
+  geom_text(
+    data = qq_labels,
+    aes(label = id, x = x, y = y),
+    inherit.aes = FALSE,
+    nudge_x = -0.2,
+    nudge_y = 0.2
+  )
+```
+
+De acuerdo con el histograma, los residuales tienen una distribución aproximadamente normal, con sesgo positivo, lo que se evidencia con el gráfico cuantil-cuantil. La cola derecha de la distribución tiene un outlier, el que podría ser influyente en el modelo OLS. Para complementar el análisis de normalidad, se ejecuta la prueba no paramétrica de bondad de ajuste de Kolmogorov-Smirnov, con un nivel de significancia del 5%.
+
+```{r}
+ks.test(
+  x = ols_residuals$.resid, 
+  y = pnorm,
+  mean = mean(ols_residuals$.resid),
+  sd = sd(ols_residuals$.resid)
+)
+```
+
+Se observa un resultado significativo para el estadístico $D$ del test de Kolmogorov-Smirnov. Por tanto, se concluye que la distribución de los residuales del modelo OLS no siguen una distribución Normal. 
+
+```{r}
+ggplot(
+  data = ols_residuals,
+  aes(x = .fitted, y = .resid)
+) +
+  geom_point(
+    alpha = 0.4,
+    shape = 16,
+    size = 2
+  ) +
+  geom_smooth(
+    method = "loess",
+    formula = y ~ x,
+    se = FALSE,
+    color = "firebrick",
+    span = 0.75
+  ) +
+  geom_text(
+    data = ols_residuals |> 
+      filter(id %in% c(226, 105) | .fitted == max(.fitted)),
+    aes(label = id),
+    nudge_x = 0.05,
+    nudge_y = 0.03
+  ) +
+  labs(
+    title = "Residuales vs valores ajustados",
+    x = "valores ajustados",
+    y = "residuales"
+  )
+```
+```{r}
+ggplot(
+  data = ols_residuals,
+  aes(x = .fitted, y = sqrt(abs(.stdresid)))
+) +
+  geom_point(
+    alpha = 0.4,
+    shape = 16,
+    size = 2
+  ) +
+  geom_text(
+    data = ols_residuals |> 
+      filter(id %in% c(226, 105) | .fitted == max(.fitted)),
+    aes(label = id),
+    nudge_x = 0.05,
+    nudge_y = 0.03
+  ) +
+  geom_smooth(
+    method = "loess",
+    formula = y ~ x,
+    se = FALSE,
+    color = "firebrick",
+    span = 0.75
+  ) +
+  labs(
+    title = "Escala-ubicación",
+    x = "valores ajustados",
+    y = expression(sqrt(abs(residuales~estandarizados)))
+  )
+```
+
+```{r}
+ggplot(
+  data = ols_residuals,
+  aes(x = id, y = .cooksd)
+) +
+  geom_col() +
+  scale_x_continuous(breaks = c(1, 100, 152, 200, 300)) +
+  labs(
+    x = "número de observación",
+    y = "distancia de Cook",
+    title = "Distancia de Cook"
+  )
+```
+
+
+```{r}
+cd_cont_pos <- function(leverage, level, model) {
+  sqrt(level * length(coef(model)) * (1 - leverage) / leverage)
+}
+
+cd_cont_neg <- function(leverage, level, model) {
+  -cd_cont_pos(leverage, level, model)
+}
+
+cd_labels <- tibble(
+  x = rep(c(0.35, 0.4), 2),
+  y = c(3.6, 4.4, -3.6, -4.4),
+  label = rep(c(0.5, 1), 2)
+)
+
+ggplot(
+  data = ols_residuals,
+  aes(x = .hat, y = .stdresid)
+) +
+  geom_hline(yintercept = 0, linetype = 2) +
+  geom_vline(xintercept = 0, linetype = 2) +
+  geom_point(
+    alpha = 0.4,
+    shape = 16,
+    size = 2
+  ) +
+  geom_text(
+    data = ols_residuals |> 
+      filter(id %in% c(226, 105) | .fitted == max(.fitted)),
+    aes(label = id),
+    nudge_x = 0.02,
+    nudge_y = 0.4
+  ) +
+  stat_function(
+    fun = cd_cont_pos,
+    args = list(level = 0.5, model = ols),
+    linetype = 2,
+    color = "forestgreen"
+  ) +
+  stat_function(
+    fun = cd_cont_pos,
+    args = list(level = 1, model = ols),
+    linetype = 2,
+    color = "forestgreen"
+  ) +
+  stat_function(
+    fun = cd_cont_neg,
+    args = list(level = 0.5, model = ols),
+    linetype = 2,
+    color = "forestgreen"
+  ) +
+  stat_function(
+    fun = cd_cont_neg,
+    args = list(level = 1, model = ols),
+    color = "forestgreen",
+    aes(linetype = "distancia de Cook")
+  ) +
+  scale_y_continuous(limits = c(-5, 5)) +
+  geom_smooth(
+    method = "loess",
+    formula = y ~ x,
+    se = FALSE,
+    color = "firebrick",
+    span = 0.75
+  ) +
+  geom_text(
+    data = cd_labels,
+    aes(x = x, y = y, label = label),
+    color = "forestgreen"
+  ) +
+  labs(
+    title = "Residuales vs levarage",
+    x = "leverage",
+    y = "residuales estandarizados"
+  ) +
+  scale_linetype_manual(
+    name = NULL, 
+    values = c(2)
+  ) +
+  theme(legend.position = c(0.3, 0.2),
+        legend.background = element_rect(fill = "transparent"),
+        legend.key = element_rect(fill = "transparent"))
+```
+
+Claramente, la observación N° 152 es influyente en el modelo OLS. La observación mencionada corresponde al cuarto trimestre de 2019 de la empresa Inmobiliaria Apoquindo S.A., período que coincide con su más alto endeudamiento de corto plazo. Además, la empresa no declara sus activos tangibles para el conjunto de entrenamiento, lo que implica que el capital de trabajo para todos sus períodos es negativo. Adicionalmente, los costos de ventas son 0, evidencia de esto es el margen bruto igual a la unidad. En síntesis, la empresa no declara costos de ventas ni activos tangibles para el período de estudio.
+
+```{r}
+vl_train |> 
+  filter(accion == vl_train |> slice(152) |> pull(accion))
+```
+
+```{r}
+ols |> 
+  broom::tidy() |> 
+  ggplot(aes(x = estimate, y = term)) +
+  geom_vline(xintercept = 0, linetype = 2, color = "firebrick") +
+  geom_point() +
+  geom_errorbarh(
+    aes(xmin = estimate + 1.96 * std.error,
+        xmax = estimate - 1.96 * std.error),
+    height = 0.5
+  ) +
+  labs(
+    title = "Coeficientes con intervalo de confianza del 95%",
+    x = "valor estimado",
+    y = NULL
+  )
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
