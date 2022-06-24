@@ -2,6 +2,8 @@
 title: "Random effect models"
 output: html_document
 date: "`r Sys.Date()`"
+editor_options: 
+  chunk_output_type: inline
 ---
 
 ```{r}
@@ -20,34 +22,28 @@ data <- readRDS(here("Data", "construccion_clean.rds")) |>
   filter(year <= 2020)
 
 vl_data <- readRDS(here("Data", "vasquez_larre_data.rds")) |> 
-  select(-ROA)
-```
-
-```{r}
-data
-```
-
-```{r}
-vl_data
+  select(-c(ROA, ebitda))
 ```
 
 ## Data partitioning
 
+No hay data partitioning, porque el mindset ed este proyecto es prescriptivo, del análisis de los residuales y de la bondad del ajuste.
+
 ```{r}
-set.seed(1234)
-train_ids <- sample(nrow(vl_data), size = round(0.7 * nrow(vl_data)), replace = FALSE)
-vl_train <- vl_data[train_ids, ]
-vl_test <- vl_data[-train_ids, ]
+# set.seed(1234)
+# train_ids <- sample(nrow(vl_data), size = round(0.7 * nrow(vl_data)), replace = FALSE)
+# vl_train <- vl_data[train_ids, ]
+# vl_test <- vl_data[-train_ids, ]
 ```
 
 # Modelo OLS
 
 ```{r}
-ols <- lm(margen_bruto ~ ., data = vl_train |> select(-c(accion, fecha)))
+ols <- lm(margen_bruto ~ ., data = vl_data |> select(-c(accion, fecha)))
 summary(ols)
 ```
 
-El modelo **OLS** ajustado a las variables de Vásquez y Larre encuentra efectos significativos para 7 de los 9 predictores, entre ellos $CT$ y $CT^2$. El coeficiente de determinación ajustado $R^2_{adj} = 0.4696$ indica que el ajuste es insuficiente para explicar la mitad de la variable respuesta, margen bruto.
+El modelo **OLS** ajustado a las variables de Vásquez y Larre encuentra efectos significativos para 7 de los 9 predictores, entre ellos $CT$ y $CT^2$. El coeficiente de determinación ajustado $R^2_{adj} = 0.4739$ indica que el ajuste es insuficiente para explicar la mitad de la variable respuesta, margen bruto.
 
 El estadístico $F$ para la prueba de regresión es significativo, para niveles de significancia menores que 0.0000001. 
 
@@ -83,7 +79,7 @@ ols_residuals |>
 ```
 
 ```{r}
-qq_ols <- ols_residuals |> 
+ols_residuals |> 
   ggplot(aes(sample = .stdresid)) +
   geom_qq_line(
     color = "firebrick", 
@@ -99,19 +95,6 @@ qq_ols <- ols_residuals |>
     x = "cuantiles teóricos",
     y = "cuantiles muestrales"
   ) 
-
-qq_labels <- ggplot_build(qq_ols)$data[[2]] |>
-  slice_max(sample, n = 2) |>
-  mutate(id = c(226, 105))
-
-qq_ols +
-  geom_text(
-    data = qq_labels,
-    aes(label = id, x = x, y = y),
-    inherit.aes = FALSE,
-    nudge_x = -0.2,
-    nudge_y = 0.2
-  )
 ```
 
 De acuerdo con el histograma, los residuales tienen una distribución aproximadamente normal, con sesgo positivo, lo que se evidencia con el gráfico cuantil-cuantil. La cola derecha de la distribución tiene un outlier, el que podría ser influyente en el modelo OLS. Para complementar el análisis de normalidad, se ejecuta la prueba no paramétrica de bondad de ajuste de Kolmogorov-Smirnov, con un nivel de significancia del 5%.
@@ -144,13 +127,6 @@ ggplot(
     color = "firebrick",
     span = 0.75
   ) +
-  geom_text(
-    data = ols_residuals |> 
-      filter(id %in% c(226, 105) | .fitted == max(.fitted)),
-    aes(label = id),
-    nudge_x = 0.05,
-    nudge_y = 0.03
-  ) +
   labs(
     title = "Residuales vs valores ajustados",
     x = "valores ajustados",
@@ -166,13 +142,6 @@ ggplot(
     alpha = 0.4,
     shape = 16,
     size = 2
-  ) +
-  geom_text(
-    data = ols_residuals |> 
-      filter(id %in% c(226, 105) | .fitted == max(.fitted)),
-    aes(label = id),
-    nudge_x = 0.05,
-    nudge_y = 0.03
   ) +
   geom_smooth(
     method = "loess",
@@ -194,7 +163,6 @@ ggplot(
   aes(x = id, y = .cooksd)
 ) +
   geom_col() +
-  scale_x_continuous(breaks = c(1, 100, 152, 200, 300)) +
   labs(
     x = "número de observación",
     y = "distancia de Cook",
@@ -228,13 +196,6 @@ ggplot(
     alpha = 0.4,
     shape = 16,
     size = 2
-  ) +
-  geom_text(
-    data = ols_residuals |> 
-      filter(id %in% c(226, 105) | .fitted == max(.fitted)),
-    aes(label = id),
-    nudge_x = 0.02,
-    nudge_y = 0.4
   ) +
   stat_function(
     fun = cd_cont_pos,
@@ -282,17 +243,12 @@ ggplot(
     name = NULL, 
     values = c(2)
   ) +
-  theme(legend.position = c(0.3, 0.2),
+  theme(legend.position = c(0.2, 0.15),
         legend.background = element_rect(fill = "transparent"),
         legend.key = element_rect(fill = "transparent"))
 ```
 
-Claramente, la observación N° 152 es influyente en el modelo OLS. La observación mencionada corresponde al cuarto trimestre de 2019 de la empresa Inmobiliaria Apoquindo S.A., período que coincide con su más alto endeudamiento de corto plazo. Además, la empresa no declara sus activos tangibles para el conjunto de entrenamiento, lo que implica que el capital de trabajo para todos sus períodos es negativo. Adicionalmente, los costos de ventas son 0, evidencia de esto es el margen bruto igual a la unidad. En síntesis, la empresa no declara costos de ventas ni activos tangibles para el período de estudio.
-
-```{r}
-vl_train |> 
-  filter(accion == vl_train |> slice(152) |> pull(accion))
-```
+Claramente, hay una observación influyente en el modelo OLS. La observación mencionada corresponde al cuarto trimestre de 2019 de la empresa Inmobiliaria Apoquindo S.A., período que coincide con su más alto endeudamiento de corto plazo. Además, la empresa no declara sus activos tangibles para el conjunto de entrenamiento, lo que implica que el capital de trabajo para todos sus períodos es negativo. Adicionalmente, los costos de ventas son 0, evidencia de esto es el margen bruto igual a la unidad. En síntesis, la empresa no declara costos de ventas ni activos tangibles para el período de estudio.
 
 ```{r}
 ols |> 
@@ -312,22 +268,159 @@ ols |>
   )
 ```
 
+# ME model
+
+```{r}
+colnames(vl_data)
+```
+
+```{r}
+library(lme4)
+
+vl_re_data <- vl_data |>
+  group_by(accion) |> 
+  mutate(time = 1:n() - 1) |> 
+  ungroup() 
+
+me <- lmerTest::lmer(
+  margen_bruto ~ endeudamiento_cp + tamano_empresa + 
+    tangibilidad_act +  oportunidades_crec +
+    p_vl + ebitda_activo + ciclo_operativo + CT_neto +
+    CT_neto_2 + (1 | accion),
+  data = vl_re_data
+)
+
+broom.mixed::tidy(me, conf.int = TRUE, conf.level = 0.95)
+```
+
+```{r}
+me_slope <- lmerTest::lmer(
+  margen_bruto ~ endeudamiento_cp + tamano_empresa + 
+    tangibilidad_act +  oportunidades_crec +
+    p_vl + ebitda_activo + ciclo_operativo + CT_neto +
+    CT_neto_2 + (time | accion),
+  data = vl_re_data
+)
+
+me_residuals <- me |> broom::augment()
+me_slope_residuals <- me_slope |> broom::augment()
+```
+
+```{r}
+me_residuals |> 
+  ggplot(aes(x = .resid)) +
+  geom_histogram(
+    aes(y = ..density.., fill = ..count..), 
+    bins = n_sturges
+  ) +
+  stat_function(
+    fun = dnorm, 
+    color = "firebrick",
+    size = 1,
+    args = list(mean = mean(me_residuals$.resid),
+                sd = sd(me_residuals$.resid))
+  ) +
+  scale_fill_gradient(low = "#dcdcdc", high = "#7c7c7c") +
+  labs(
+    title = "Histograma de residuales con curva normal teórica",
+    x = "residuales", 
+    y = "densidad",
+    fill = "frecuencia"
+  )
+
+me_residuals |> 
+  mutate(.stdresid = scale(.resid)) |> 
+  ggplot(aes(sample = .stdresid)) +
+  geom_qq_line(
+    color = "firebrick", 
+    size = 1,
+  ) +
+  geom_qq(
+    alpha = 0.4,
+    shape = 16,
+    size = 2,
+  ) +
+  labs(
+    title = "Gráfico Normal Cuantil-Cuantil",
+    x = "cuantiles teóricos",
+    y = "cuantiles muestrales"
+  ) 
+```
+
+```{r}
+me_slope_residuals |> 
+  ggplot(aes(x = .resid)) +
+  geom_histogram(
+    aes(y = ..density.., fill = ..count..), 
+    bins = n_sturges
+  ) +
+  stat_function(
+    fun = dnorm, 
+    color = "firebrick",
+    size = 1,
+    args = list(mean = mean(me_slope_residuals$.resid),
+                sd = sd(me_slope_residuals$.resid))
+  ) +
+  scale_fill_gradient(low = "#dcdcdc", high = "#7c7c7c") +
+  labs(
+    title = "Histograma de residuales con curva normal teórica",
+    x = "residuales", 
+    y = "densidad",
+    fill = "frecuencia"
+  )
+
+me_slope_residuals |> 
+  mutate(.stdresid = scale(.resid)) |> 
+  ggplot(aes(sample = .stdresid)) +
+  geom_qq_line(
+    color = "firebrick", 
+    size = 1,
+  ) +
+  geom_qq(
+    alpha = 0.4,
+    shape = 16,
+    size = 2,
+  ) +
+  labs(
+    title = "Gráfico Normal Cuantil-Cuantil",
+    x = "cuantiles teóricos",
+    y = "cuantiles muestrales"
+  )
+```
+
+```{r}
+map(
+  list(me_residuals, me_slope_residuals),
+  \(x) (ks.test(
+    x = x$.resid, 
+    y = pnorm,
+    mean = mean(x$.resid),
+    sd = sd(x$.resid)
+  ))
+)
+```
+
+
+```{r}
+anova(me, me_slope)
+```
+
+```{r}
+ranef(me)
+ranef(me_slope)
+```
+
+```{r}
+MuMIn::r.squaredGLMM(me)
+MuMIn::r.squaredGLMM(me_slope)
+```
 
 
 
 
-
-
-
-
-
-
-
-
-
-
-
-
+```{r}
+summary(ols)
+```
 
 
 
