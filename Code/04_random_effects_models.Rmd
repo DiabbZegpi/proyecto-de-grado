@@ -10,19 +10,30 @@ editor_options:
 library(tidyverse)
 library(lubridate)
 library(here)
+library(patchwork)
 
 theme_set(theme_bw())
 theme_update(
   text = element_text(size = 16),
-  plot.title = element_text(hjust = 0.5)
+  plot.title = element_text(hjust = 0.5),
+  plot.subtitle = element_text(hjust = 0.5)
 )
 
 data <- readRDS(here("Data", "construccion_clean.rds")) |> 
   mutate(year = year(fecha)) |> 
   filter(year <= 2020)
 
+min_max_scaler <- function(x) {
+  scaled <- (x - min(x)) / (max(x) - min(x))
+  return (scaled)
+}
+
 vl_data <- readRDS(here("Data", "vasquez_larre_data.rds")) |> 
-  select(-c(ROA, ebitda))
+  select(-c(ROA)) |> 
+  mutate(across(c(ebitda, tamano_empresa, ciclo_operativo), min_max_scaler))
+
+pib <- readRDS(here("Data", "pib_Chile.rds")) |> 
+  mutate(year = as.numeric(year))
 ```
 
 ## Data partitioning
@@ -34,6 +45,60 @@ No hay data partitioning, porque el mindset ed este proyecto es prescriptivo, de
 # train_ids <- sample(nrow(vl_data), size = round(0.7 * nrow(vl_data)), replace = FALSE)
 # vl_train <- vl_data[train_ids, ]
 # vl_test <- vl_data[-train_ids, ]
+```
+
+## Correlation analysis
+
+```{r}
+corr_data <- vl_data |>
+  select(-c(accion, fecha, margen_bruto)) |> 
+  corrr::correlate(diagonal = 1) |> 
+  corrr::shave(upper = FALSE) |> 
+  pivot_longer(
+    cols = -term,
+    names_to = "colname",
+    values_to = "corr"
+  ) |> 
+  mutate(
+    rowname = fct_inorder(term),
+    colname = fct_inorder(colname),
+    label = if_else(is.na(corr), "", sprintf("%1.2f", corr))
+  )
+
+corr_plot <- ggplot(corr_data, aes(rowname, fct_rev(colname), 
+                                   fill = corr)) +
+  geom_tile() +
+  geom_text(aes(
+    label = label,
+    color = abs(corr) < .75
+  )) +
+  coord_fixed(expand = FALSE) +
+  scale_color_manual(
+    values = c("white", "black"),
+    guide = "none"
+  ) +
+  scale_fill_distiller(
+    palette = "PuOr",
+    na.value = "white",
+    direction = 1,
+    limits = c(-1, 1),
+    name = "Correlación\nde Pearson"
+  ) +
+  labs(x = NULL, y = NULL,
+       title = "Matriz de correlación de los predictores") +
+  theme(text = element_text(size = 16),
+        panel.border = element_rect(color = NA, fill = NA),
+        legend.position = c(.85, .8),
+        axis.text.x = element_text(angle = 90, hjust = 1, vjust = .5),
+        axis.ticks = element_blank(),
+        panel.grid = element_blank())
+
+ggsave(
+  filename = here("Plots", "matriz_predictores.png"),
+  plot = corr_plot,
+  dpi = 300,
+  device = ragg::agg_png
+)
 ```
 
 # Modelo OLS
@@ -56,7 +121,7 @@ ols_residuals <- fortify(ols) |>
   mutate(id = row_number())
 n_sturges <- nclass.Sturges(ols_residuals$.resid)
 
-ols_residuals |> 
+ols_hist <- ols_residuals |> 
   ggplot(aes(x = .resid)) +
   geom_histogram(
     aes(y = ..density.., fill = ..count..), 
@@ -71,15 +136,13 @@ ols_residuals |>
   ) +
   scale_fill_gradient(low = "#dcdcdc", high = "#7c7c7c") +
   labs(
-    title = "Histograma de residuales con curva normal teórica",
+    title = "Histograma de residuales\ny curva normal teórica",
     x = "residuales", 
     y = "densidad",
     fill = "frecuencia"
   )
-```
 
-```{r}
-ols_residuals |> 
+ols_qq <- ols_residuals |> 
   ggplot(aes(sample = .stdresid)) +
   geom_qq_line(
     color = "firebrick", 
@@ -94,7 +157,17 @@ ols_residuals |>
     title = "Gráfico Normal Cuantil-Cuantil",
     x = "cuantiles teóricos",
     y = "cuantiles muestrales"
-  ) 
+  )
+
+ols_plot_1 <- ols_hist + ols_qq + plot_annotation(tag_levels = "a", tag_suffix = ")")
+ggsave(
+  filename = here("Plots", "OLS_normalidad.png"),
+  plot = ols_plot_1,
+  device = ragg::agg_png,
+  dpi = 300,
+  height = 7,
+  width = 11
+)
 ```
 
 De acuerdo con el histograma, los residuales tienen una distribución aproximadamente normal, con sesgo positivo, lo que se evidencia con el gráfico cuantil-cuantil. La cola derecha de la distribución tiene un outlier, el que podría ser influyente en el modelo OLS. Para complementar el análisis de normalidad, se ejecuta la prueba no paramétrica de bondad de ajuste de Kolmogorov-Smirnov, con un nivel de significancia del 5%.
@@ -134,7 +207,7 @@ ggplot(
   )
 ```
 ```{r}
-ggplot(
+ols_scale_plot <- ggplot(
   data = ols_residuals,
   aes(x = .fitted, y = sqrt(abs(.stdresid)))
 ) +
@@ -155,23 +228,7 @@ ggplot(
     x = "valores ajustados",
     y = expression(sqrt(abs(residuales~estandarizados)))
   )
-```
 
-```{r}
-ggplot(
-  data = ols_residuals,
-  aes(x = id, y = .cooksd)
-) +
-  geom_col() +
-  labs(
-    x = "número de observación",
-    y = "distancia de Cook",
-    title = "Distancia de Cook"
-  )
-```
-
-
-```{r}
 cd_cont_pos <- function(leverage, level, model) {
   sqrt(level * length(coef(model)) * (1 - leverage) / leverage)
 }
@@ -186,7 +243,7 @@ cd_labels <- tibble(
   label = rep(c(0.5, 1), 2)
 )
 
-ggplot(
+ols_cook_plot <- ggplot(
   data = ols_residuals,
   aes(x = .hat, y = .stdresid)
 ) +
@@ -243,9 +300,33 @@ ggplot(
     name = NULL, 
     values = c(2)
   ) +
-  theme(legend.position = c(0.2, 0.15),
+  theme(legend.position = c(0.3, 0.15),
         legend.background = element_rect(fill = "transparent"),
         legend.key = element_rect(fill = "transparent"))
+
+ols_plot_2 <- ols_scale_plot + ols_cook_plot + plot_annotation(tag_levels = "a", tag_suffix = ")")
+
+ggsave(
+  filename = here("Plots", "Scale_Cook_plot.png"),
+  plot = ols_plot_2,
+  device = ragg::agg_png,
+  dpi = 300,
+  height = 7,
+  width = 11
+)
+```
+
+```{r}
+ggplot(
+  data = ols_residuals,
+  aes(x = id, y = .cooksd)
+) +
+  geom_col() +
+  labs(
+    x = "número de observación",
+    y = "distancia de Cook",
+    title = "Distancia de Cook"
+  )
 ```
 
 Claramente, hay una observación influyente en el modelo OLS. La observación mencionada corresponde al cuarto trimestre de 2019 de la empresa Inmobiliaria Apoquindo S.A., período que coincide con su más alto endeudamiento de corto plazo. Además, la empresa no declara sus activos tangibles para el conjunto de entrenamiento, lo que implica que el capital de trabajo para todos sus períodos es negativo. Adicionalmente, los costos de ventas son 0, evidencia de esto es el margen bruto igual a la unidad. En síntesis, la empresa no declara costos de ventas ni activos tangibles para el período de estudio.
@@ -285,7 +366,7 @@ vl_re_data <- vl_data |>
 me <- lmerTest::lmer(
   margen_bruto ~ endeudamiento_cp + tamano_empresa + 
     tangibilidad_act +  oportunidades_crec +
-    p_vl + ebitda_activo + ciclo_operativo + CT_neto +
+    p_vl + ebitda + ciclo_operativo + CT_neto +
     CT_neto_2 + (1 | accion),
   data = vl_re_data
 )
@@ -297,7 +378,7 @@ broom.mixed::tidy(me, conf.int = TRUE, conf.level = 0.95)
 me_slope <- lmerTest::lmer(
   margen_bruto ~ endeudamiento_cp + tamano_empresa + 
     tangibilidad_act +  oportunidades_crec +
-    p_vl + ebitda_activo + ciclo_operativo + CT_neto +
+    p_vl + ebitda + ciclo_operativo + CT_neto +
     CT_neto_2 + (time | accion),
   data = vl_re_data
 )
@@ -306,87 +387,6 @@ me_residuals <- me |> broom::augment()
 me_slope_residuals <- me_slope |> broom::augment()
 ```
 
-```{r}
-me_residuals |> 
-  ggplot(aes(x = .resid)) +
-  geom_histogram(
-    aes(y = ..density.., fill = ..count..), 
-    bins = n_sturges
-  ) +
-  stat_function(
-    fun = dnorm, 
-    color = "firebrick",
-    size = 1,
-    args = list(mean = mean(me_residuals$.resid),
-                sd = sd(me_residuals$.resid))
-  ) +
-  scale_fill_gradient(low = "#dcdcdc", high = "#7c7c7c") +
-  labs(
-    title = "Histograma de residuales con curva normal teórica",
-    x = "residuales", 
-    y = "densidad",
-    fill = "frecuencia"
-  )
-
-me_residuals |> 
-  mutate(.stdresid = scale(.resid)) |> 
-  ggplot(aes(sample = .stdresid)) +
-  geom_qq_line(
-    color = "firebrick", 
-    size = 1,
-  ) +
-  geom_qq(
-    alpha = 0.4,
-    shape = 16,
-    size = 2,
-  ) +
-  labs(
-    title = "Gráfico Normal Cuantil-Cuantil",
-    x = "cuantiles teóricos",
-    y = "cuantiles muestrales"
-  ) 
-```
-
-```{r}
-me_slope_residuals |> 
-  ggplot(aes(x = .resid)) +
-  geom_histogram(
-    aes(y = ..density.., fill = ..count..), 
-    bins = n_sturges
-  ) +
-  stat_function(
-    fun = dnorm, 
-    color = "firebrick",
-    size = 1,
-    args = list(mean = mean(me_slope_residuals$.resid),
-                sd = sd(me_slope_residuals$.resid))
-  ) +
-  scale_fill_gradient(low = "#dcdcdc", high = "#7c7c7c") +
-  labs(
-    title = "Histograma de residuales con curva normal teórica",
-    x = "residuales", 
-    y = "densidad",
-    fill = "frecuencia"
-  )
-
-me_slope_residuals |> 
-  mutate(.stdresid = scale(.resid)) |> 
-  ggplot(aes(sample = .stdresid)) +
-  geom_qq_line(
-    color = "firebrick", 
-    size = 1,
-  ) +
-  geom_qq(
-    alpha = 0.4,
-    shape = 16,
-    size = 2,
-  ) +
-  labs(
-    title = "Gráfico Normal Cuantil-Cuantil",
-    x = "cuantiles teóricos",
-    y = "cuantiles muestrales"
-  )
-```
 
 ```{r}
 map(
@@ -415,26 +415,186 @@ MuMIn::r.squaredGLMM(me)
 MuMIn::r.squaredGLMM(me_slope)
 ```
 
-
-
+```{r}
+summary(me_slope)
+```
 
 ```{r}
-summary(ols)
+me_resid_plot <- ggplot(
+  data = me_residuals,
+  aes(x = .fitted, y = .resid)
+) +
+  geom_point(
+    aes(color = .cooksd >= 0.4),
+    show.legend = FALSE,
+    alpha = 0.4,
+    shape = 16,
+    size = 2
+  ) +
+  geom_smooth(
+    method = "loess",
+    formula = y ~ x,
+    color = "firebrick",
+    se = FALSE,
+    size = 1
+  ) +
+  scale_color_manual(values = c("black", "firebrick")) +
+  labs(
+    x = expression(hat(y)),
+    y = "residuales",
+    title = "Valores ajustados vs residuales"
+  )
+
+
+me_cook_plot <- ggplot(
+  data = me_residuals,
+  aes(x = seq_along(.cooksd), y = .cooksd)
+) +
+  geom_col(aes(color = .cooksd >= 0.4), show.legend = FALSE) +
+  scale_color_manual(values = c("black", "firebrick")) +
+  labs(
+    x = "número de observación",
+    y = "distancia de Cook",
+    title = "Distancia de Cook"
+  )
+
+me_plot_1 <- me_resid_plot + me_cook_plot + plot_annotation(tag_levels = "a", tag_suffix = ")")
+
+
+ggsave(
+  filename = here("Plots", "LMER_residuales_Cook.png"),
+  plot = me_plot_1,
+  device = ragg::agg_png,
+  dpi = 300,
+  height = 7,
+  width = 11
+)
 ```
 
 
+```{r}
+ids_to_remove <- me_residuals |> 
+  mutate(id = row_number()) |> 
+  slice_max(abs(.resid), n = 7) |> 
+  filter(margen_bruto == 1) |> 
+  pull(id)
+
+# vl_data_pib <- vl_data |> 
+#   mutate(year = year(fecha)) |> 
+#   left_join(pib |> mutate(pib_lag = lag(pib)), by = c("year")) |> 
+#   mutate(pib = min_max_scaler(pib),
+#          pib_lag = min_max_scaler(pib_lag))
+
+me_2 <- lmerTest::lmer(
+  margen_bruto ~ endeudamiento_cp + tamano_empresa + 
+    tangibilidad_act +  oportunidades_crec +
+    p_vl + ebitda + ciclo_operativo + CT_neto +
+    CT_neto_2 + (1 | accion),
+  data = vl_data[-ids_to_remove, ]
+)
+
+me_2_residuals <- broom::augment(me_2)
+
+MuMIn::r.squaredGLMM(me_2)
+summary(me_2)
+```
+
+```{r}
+me_2_resid_plot <- ggplot(
+  data = me_2_residuals,
+  aes(x = .fitted, y = .resid)
+) +
+  geom_point(
+    aes(color = .cooksd >= 0.4),
+    show.legend = FALSE,
+    alpha = 0.4,
+    shape = 16,
+    size = 2
+  ) +
+  geom_smooth(
+    method = "loess",
+    formula = y ~ x,
+    color = "firebrick",
+    se = FALSE,
+    size = 1
+  ) +
+  scale_color_manual(values = c("black", "firebrick")) +
+  labs(
+    x = expression(hat(y)),
+    y = "residuales",
+    title = "Valores ajustados vs residuales"
+  )
 
 
+me_2_cook_plot <- ggplot(
+  data = me_2_residuals,
+  aes(x = seq_along(.cooksd), y = .cooksd)
+) +
+  geom_col(aes(color = .cooksd >= 0.4), show.legend = FALSE) +
+  scale_color_manual(values = c("black", "firebrick")) +
+  labs(
+    x = "número de observación",
+    y = "distancia de Cook",
+    title = "Distancia de Cook"
+  )
+
+me_plot_2 <- me_resid_plot + me_cook_plot + plot_annotation(tag_levels = "a", tag_suffix = ")")
+```
 
 
+```{r}
+me_2 <- lmerTest::lmer(
+  margen_bruto ~ endeudamiento_cp + tamano_empresa + 
+    tangibilidad_act +  oportunidades_crec +
+    p_vl + ebitda + ciclo_operativo + CT_neto +
+    CT_neto_2 + pib + (1 | accion),
+  data = vl_data_pib
+)
 
+summary(me_2)
+```
 
+```{r}
+me_2_coefs_plot <- broom.mixed::tidy(me_2, conf.int = TRUE, conf.level = 0.95) |> 
+  filter(effect == "fixed", term != "(Intercept)") |> 
+  mutate(term = fct_rev(fct_inorder(term))) |> 
+  ggplot(aes(
+    x = term, 
+    y = estimate, 
+    ymin = conf.low, 
+    ymax = conf.high,
+    color = 0 >= conf.low & 0 <= conf.high
+  )) +
+  geom_hline(
+    yintercept = 0,
+    linetype = 2,
+    color = "firebrick"
+  ) +
+  geom_point(
+    shape = 16,
+    size = 3
+  ) +
+  geom_errorbar(
+    width = 0.4,
+    size = 0.8
+  ) +
+  scale_color_manual(values = c("firebrick", "gray")) +
+  coord_flip() +
+  labs(
+    title = "LMER: efectos sobre el margen bruto",
+    subtitle = "Intervalo de confianza del 95%",
+    y = expression(hat(beta)~"± Margen de error"),
+    x = NULL
+  ) +
+  theme(legend.position = "none")
 
-
-
-
-
-
+ggsave(
+  filename = here("Plots", "LMER_coefficients.png"),
+  plot = me_2_coefs_plot,
+  device = ragg::agg_png,
+  dpi = 300
+)
+```
 
 
 
