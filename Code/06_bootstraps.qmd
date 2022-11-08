@@ -1,0 +1,13 @@
+---
+title: "Bootstraps"
+format: html
+editor: visual
+---
+
+```{r}
+x <- seq(0, 2 * pi, length.out = 1000)
+par(mfrow = c(1, 2))
+plot(x, sin(x), type = 'l')
+plot(sin(x), asin(sin(x)), type = 'l')
+```
+
