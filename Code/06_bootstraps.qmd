@@ -5,9 +5,190 @@ editor: visual
 ---
 
 ```{r}
-x <- seq(0, 2 * pi, length.out = 1000)
-par(mfrow = c(1, 2))
-plot(x, sin(x), type = 'l')
-plot(sin(x), asin(sin(x)), type = 'l')
+library(tidyverse)
+library(lubridate)
+library(tidymodels)
+library(workflowsets)
+library(multilevelmod)
+library(doParallel)
+library(here)
+
+tidymodels_prefer()
+
+data <- 
+  readRDS(here("Data", "construccion_clean.rds")) |> 
+  mutate(year = year(fecha)) |> 
+  filter(year <= 2020)
+
+vl_data <- 
+  readRDS(here("Data", "vasquez_larre_data.rds")) |> 
+  select(-ebitda)
 ```
+
+## Feature engineering
+
+```{r}
+empresas_a_remover <- c(
+  'Aguas Araucania S.A. Ord',
+  'Aguas Del Altiplano S.A. Ord',
+  'Inmobiliaria Apoquindo S.A. Ord',
+  'Ruta Del Loa Sociedad Concesionaria S.A. Ord',
+  'Tecno Fast S.A. Ord'
+)
+
+transmuted_data <- data |>
+  filter(
+    !accion %in% empresas_a_remover,
+    between(fecha, 
+            as_date('2010-01-01'), 
+            as_date('2020-01-01'))
+  ) |> 
+  transmute(
+    accion = factor(accion),
+    margen_bruto = resultado_bruto / ingreso_neto,
+    capital_trabajo = capital_trabajo / activo_total,
+    cuentas_xcobrar = cuentas_xcobrar / activo_total,
+    cuentas_xpagar,
+    inventario = inventario / activo_total,
+    ciclo_operativo,
+    ROA = resultado_bruto / activo_total
+  ) |> 
+  filter(!is.infinite(margen_bruto))
+```
+
+## Data budget
+
+```{r}
+set.seed(789)
+bootstrap_splits <- bootstraps(transmuted_data, 
+                               times = 25)
+```
+
+## Modeling
+
+Model specification.
+
+```{r}
+lmer_spec <- 
+  linear_reg() |> 
+  set_mode('regression') |> 
+  set_engine('lmer')
+```
+
+Recipes.
+
+```{r}
+rec_CT <- 
+  recipe(ROA ~ capital_trabajo + accion, 
+         data = transmuted_data) |> 
+  update_role(accion, new_role = 'exp_unit') |> 
+  step_poly(all_numeric_predictors(), degree = 2L)
+
+rec_CO <- 
+  recipe(ROA ~ ciclo_operativo + accion, 
+         data = transmuted_data) |> 
+  update_role(accion, new_role = 'exp_unit') |> 
+  step_poly(all_numeric_predictors(), degree = 2L)
+
+rec_CPC <- 
+  recipe(ROA ~ cuentas_xcobrar + accion, 
+         data = transmuted_data) |> 
+  update_role(accion, new_role = 'exp_unit') |> 
+  step_poly(all_numeric_predictors(), degree = 2L)
+
+rec_CPP <- 
+  recipe(ROA ~ cuentas_xpagar + accion, 
+         data = transmuted_data) |> 
+  update_role(accion, new_role = 'exp_unit') |> 
+  step_poly(all_numeric_predictors(), degree = 2L)
+
+rec_IN <- 
+  recipe(ROA ~ inventario + accion, 
+         data = transmuted_data) |> 
+  update_role(accion, new_role = 'exp_unit') |> 
+  step_poly(all_numeric_predictors(), degree = 2L)
+```
+
+## Workflow set
+
+```{r}
+wf_CT <- 
+  workflow() |> 
+  add_model(
+    lmer_spec, 
+    formula = ROA ~ capital_trabajo + (1|accion)
+  ) |> 
+  add_recipe(rec_CT)
+  
+
+fit(wf_CT, data = transmuted_data)
+```
+
+
+```{r}
+lme_models <- workflow_set(
+  preproc = list(
+    'capital_trabajo' = rec_CT,
+    'ciclo_operativo' = rec_CO,
+    'cuentas_xcobrar' = rec_CPC,
+    'cuentas_xpagar' = rec_CPP,
+    'inventario' = rec_IN
+  ),
+  models = list('lme' = lme_spec), 
+  cross = TRUE
+)
+```
+
+## Fit resamples
+
+Parallel setup
+
+```{r}
+cores <- parallel::detectCores(logical = FALSE)
+cl <- makePSOCKcluster(cores)
+registerDoParallel(cl)
+```
+
+
+```{r}
+wf_results <- workflow_map(
+  lme_models,
+  fn = 'fit_resamples',
+  resamples = bootstrap_splits,
+  metrics = metric_set(rmse, mae, rsq), 
+  seed = 678,
+  verbose = TRUE
+)
+stopImplicitCluster()
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
