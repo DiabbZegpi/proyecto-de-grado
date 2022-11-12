@@ -8,12 +8,12 @@ editor: visual
 library(tidyverse)
 library(lubridate)
 library(tidymodels)
-library(workflowsets)
 library(multilevelmod)
-library(doParallel)
 library(here)
 
 tidymodels_prefer()
+theme_set(theme_bw())
+theme_update(text = element_text(size = 14))
 
 data <- 
   readRDS(here("Data", "construccion_clean.rds")) |> 
@@ -60,112 +60,167 @@ transmuted_data <- data |>
 
 ```{r}
 set.seed(789)
-bootstrap_splits <- bootstraps(transmuted_data, 
-                               times = 25)
+bootstrap_splits <- bootstraps(transmuted_data, times = 200)
 ```
 
 ## Modeling
 
-Model specification.
+Running the five models on the bootstraps resamples with `purrr`.
 
 ```{r}
 lmer_spec <- 
   linear_reg() |> 
   set_mode('regression') |> 
   set_engine('lmer')
-```
 
-Recipes.
-
-```{r}
-rec_CT <- 
-  recipe(ROA ~ capital_trabajo + accion, 
-         data = transmuted_data) |> 
-  update_role(accion, new_role = 'exp_unit') |> 
-  step_poly(all_numeric_predictors(), degree = 2L)
-
-rec_CO <- 
-  recipe(ROA ~ ciclo_operativo + accion, 
-         data = transmuted_data) |> 
-  update_role(accion, new_role = 'exp_unit') |> 
-  step_poly(all_numeric_predictors(), degree = 2L)
-
-rec_CPC <- 
-  recipe(ROA ~ cuentas_xcobrar + accion, 
-         data = transmuted_data) |> 
-  update_role(accion, new_role = 'exp_unit') |> 
-  step_poly(all_numeric_predictors(), degree = 2L)
-
-rec_CPP <- 
-  recipe(ROA ~ cuentas_xpagar + accion, 
-         data = transmuted_data) |> 
-  update_role(accion, new_role = 'exp_unit') |> 
-  step_poly(all_numeric_predictors(), degree = 2L)
-
-rec_IN <- 
-  recipe(ROA ~ inventario + accion, 
-         data = transmuted_data) |> 
-  update_role(accion, new_role = 'exp_unit') |> 
-  step_poly(all_numeric_predictors(), degree = 2L)
-```
-
-## Workflow set
-
-```{r}
-wf_CT <- 
-  workflow() |> 
-  add_model(
-    lmer_spec, 
-    formula = ROA ~ capital_trabajo + (1|accion)
-  ) |> 
-  add_recipe(rec_CT)
+fit_lmer_on_bootstrap <- function(split, formula) {
+  analysis_data <- recipe(formula, data = analysis(split)) |> 
+    step_normalize(all_numeric_predictors()) |> 
+    step_poly(all_numeric_predictors(), degree = 2) |> 
+    prep() |> 
+    bake(new_data = NULL)
   
+  fit(lmer_spec, formula = ROA ~ (1|accion) + . - accion, data = analysis_data)
+}
 
-fit(wf_CT, data = transmuted_data)
+get_model_predictions <- function(model, split, formula) {
+  assessment_data <- recipe(formula, data = analysis(split)) |> 
+    step_normalize(all_numeric_predictors()) |> 
+    step_poly(all_numeric_predictors(), degree = 2) |> 
+    prep() |> 
+    bake(new_data = assessment(split))
+  
+  augment(model, new_data = assessment_data) |> 
+    select(ROA, .pred)
+}
+
+models <- bootstrap_splits |> 
+  mutate(
+    model_CT = map(splits, fit_lmer_on_bootstrap, formula = ROA ~ capital_trabajo + accion),
+    model_CO = map(splits, fit_lmer_on_bootstrap, formula = ROA ~ ciclo_operativo + accion),
+    model_CPC = map(splits, fit_lmer_on_bootstrap, formula = ROA ~ cuentas_xcobrar + accion),
+    model_CPP = map(splits, fit_lmer_on_bootstrap, formula = ROA ~ cuentas_xpagar + accion),
+    model_IN = map(splits, fit_lmer_on_bootstrap, formula = ROA ~ inventario + accion)
+  )
+
+models_augmented <- models |> 
+  mutate(
+    predictions_CT = map2(model_CT, splits, get_model_predictions, 
+                          formula = ROA ~ capital_trabajo + accion),
+    predictions_CO = map2(model_CO, splits, get_model_predictions, 
+                          formula = ROA ~ ciclo_operativo + accion),
+    predictions_CPC = map2(model_CPC, splits, get_model_predictions, 
+                           formula = ROA ~ cuentas_xcobrar + accion),
+    predictions_CPP = map2(model_CPP, splits, get_model_predictions, 
+                           formula = ROA ~ cuentas_xpagar + accion),
+    predictions_IN = map2(model_IN, splits, get_model_predictions, 
+                          formula = ROA ~ inventario + accion)
+  ) 
 ```
 
+## Interpretation
 
 ```{r}
-lme_models <- workflow_set(
-  preproc = list(
-    'capital_trabajo' = rec_CT,
-    'ciclo_operativo' = rec_CO,
-    'cuentas_xcobrar' = rec_CPC,
-    'cuentas_xpagar' = rec_CPP,
-    'inventario' = rec_IN
-  ),
-  models = list('lme' = lme_spec), 
-  cross = TRUE
+predictor_names <- c(
+  "capital de trabajo",
+  "ciclo operativo",
+  "cuentas por cobrar",
+  "cuentas por pagar",
+  "inventario"
 )
+
+names(predictor_names) <- c("CT", "CO", "CPC", "CPP", "IN")
 ```
-
-## Fit resamples
-
-Parallel setup
 
 ```{r}
-cores <- parallel::detectCores(logical = FALSE)
-cl <- makePSOCKcluster(cores)
-registerDoParallel(cl)
+models_performance <- 
+  models_augmented |> 
+  select(starts_with("predictions")) |> 
+  pivot_longer(
+    cols = everything(),
+    names_to = "model",
+    values_to = "predictions",
+    names_transform = \(name) str_remove(name, "predictions_")
+  ) |> 
+  mutate(
+    rmse = map(predictions, rmse, truth = ROA, estimate = .pred),
+    rsq = map(predictions, rsq, truth = ROA, estimate = .pred),
+    mae = map(predictions, mae, truth = ROA, estimate = .pred)
+  ) |> 
+  mutate(across(rmse:mae, \(estimate) map_dbl(estimate, ".estimate"))) |> 
+  select(-predictions)
 ```
-
 
 ```{r}
-wf_results <- workflow_map(
-  lme_models,
-  fn = 'fit_resamples',
-  resamples = bootstrap_splits,
-  metrics = metric_set(rmse, mae, rsq), 
-  seed = 678,
-  verbose = TRUE
-)
-stopImplicitCluster()
+p1 <- 
+  models_performance |> 
+  pivot_longer(cols = rmse:mae, names_to = "performance_metric") |> 
+  mutate(model = fct_inorder(model)) |> 
+  ggplot(aes(x = value, fill = performance_metric)) +
+  geom_histogram(bins = 20) +
+  scale_fill_viridis_d(end = 0.6) +
+  scale_x_continuous(n.breaks = 3) +
+  facet_grid(performance_metric ~ model, scales = "free",
+             labeller = labeller(model = predictor_names)) +
+  theme(legend.position = "none",
+        strip.background = element_rect(fill = "#adc4be"),
+        panel.spacing.x = unit(5, "mm")) +
+  labs(
+    x = NULL,
+    y = NULL,
+    title = "Modelos de efectos mixtos con distintos efectos fijos",
+    subtitle = expression("Distribución de bootstrap para MAE, RMSE y"~R^2)
+  )
 ```
 
+```{r}
+models_coefficients <- 
+  models |> 
+  select(starts_with("model")) |> 
+  pivot_longer(
+    cols = everything(),
+    names_to = "model",
+    values_to = "fit",
+    names_transform = \(name) str_remove(name, "model_")
+  ) |> 
+  mutate(tidy = map(fit, tidy)) |> 
+  unnest(tidy) |> 
+  select(-fit)
+```
 
+```{r}
+p2 <- 
+  models_coefficients |> 
+  filter(term != "(Intercept)",
+         effect == "fixed") |> 
+  mutate(degree_of_polynomial = factor(str_extract(term, "\\d")),
+         model = fct_inorder(model)) |> 
+  ggplot(aes(x = estimate, y = degree_of_polynomial, color = degree_of_polynomial)) +
+  geom_vline(xintercept = 0, linetype = "dashed") +
+  geom_boxplot(outlier.color = NA) +
+  geom_point(position = position_jitter(height = 0.2, seed = 234), alpha = 0.2) +
+  scale_color_viridis_d(end = 0.6) +
+  scale_x_continuous(n.breaks = 3L) +
+  facet_wrap(vars(model), scales = "free_x", ncol = 5,
+             labeller = labeller(model = predictor_names)) +
+  theme(legend.position = "none",
+        strip.background = element_rect(fill = "#adc4be"),
+        panel.grid.major.y = element_blank(),
+        panel.spacing.x = unit(5, "mm")) +
+  labs(
+    x = expression(hat(beta)[i]),
+    y = "Grado del término en el polinomio",
+    title = "Coeficientes de los efectos fijos en los modelos polinómicos",
+    subtitle = "Modelos de efectos mixtos entrenados en 200 réplicas de bootstrap"
+  ) 
+```
 
-
-
+```{r}
+ggsave(plot = p1, filename = here("Plots", "bootstrap_metrics.png"),
+       device = ragg::agg_png, dpi = 300, height = 5.5, width = 8)
+ggsave(plot = p2, filename = here("Plots", "bootstrap_coefficients.png"),
+       device = ragg::agg_png, dpi = 300, height = 5.5, width = 8)
+```
 
 
 
